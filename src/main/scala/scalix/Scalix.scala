@@ -97,8 +97,56 @@ object Scalix extends App {
     } yield (director._2, movieTitle)
   }
 
+  def findMostFrequentActorPairs(): List[((String, String), Int)] = {
+    // Étape 1 : Inverser le mapping pour associer chaque film à son ensemble d'acteurs
+    val movieToActors: Map[Int, Set[Int]] = movieCache.toSeq
+      .flatMap { case (actorId, movies) => movies.map(movie => (movie._1, actorId)) } // (movieId, actorId)
+      .groupBy(_._1) // Grouper par ID de film
+      .view.mapValues(_.map(_._2).toSet) // Obtenir un Set d'acteurs par film
+      .toMap
+
+    // Étape 2 : Trouver les paires d'acteurs pour chaque film
+    val actorPairsWithCount: Map[(Int, Int), Int] = movieToActors.values
+      .flatMap { actors =>
+        for {
+          actor1 <- actors
+          actor2 <- actors if actor1 < actor2 // Générer des paires uniques
+        } yield (actor1, actor2)
+      }
+      .groupBy(identity) // Grouper les paires
+      .view.mapValues(_.size) // Compter les occurrences de chaque paire
+      .toMap
+
+    // Étape 3 : Associer les IDs d'acteurs à leurs noms et trier les résultats
+    actorPairsWithCount.toList
+      .map { case ((actor1Id, actor2Id), count) =>
+        val actor1Name = actorCache.collectFirst { case ((firstName, lastName), Some(id)) if id == actor1Id => s"$firstName $lastName" }.getOrElse(s"Actor $actor1Id")
+        val actor2Name = actorCache.collectFirst { case ((firstName, lastName), Some(id)) if id == actor2Id => s"$firstName $lastName" }.getOrElse(s"Actor $actor2Id")
+        ((actor1Name, actor2Name), count)
+      }
+      .sortBy(-_._2) // Trier par fréquence décroissante
+  }
+
   // Exemple d'utilisation
   println("Hello, Scalix!")
   val result = collaboration(FullName("Tom", "Hanks"), FullName("Tom", "Cruise"))
   println(result)
+
+  val result1 = collaboration(FullName("Leonardo", "DiCaprio"), FullName("Kate", "Winslet"))
+  println(result1)
+
+  val result2 = collaboration(FullName("Robert", "De Niro"), FullName("Al", "Pacino"))
+  println(result2)
+
+  val result3 = collaboration(FullName("Brad", "Pitt"), FullName("Angelina", "Jolie"))
+  println(result3)
+
+  val result4 = collaboration(FullName("Johnny", "Depp"), FullName("Helena", "Bonham Carter"))
+  println(result4)
+
+  val result5 = collaboration(FullName("Tom", "Hanks"), FullName("Meg", "Ryan"))
+  println(result5)
+  println(movieCache)
+  val mostFrequentPairs = findMostFrequentActorPairs()
+  println(mostFrequentPairs.take(10))
 }
