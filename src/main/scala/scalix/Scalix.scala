@@ -34,13 +34,18 @@ object Scalix extends App {
 
   // Function to read from file and return content
   private def readFromFile(filename: String): Option[String] = {
-    val source = Source.fromFile(filename)
-    try {
-      Some(source.mkString)
-    } catch {
-      case _: Exception => None
-    } finally {
-      source.close()
+    val file = new File(filename)
+    if (file.exists && file.isFile) {
+      val source = Source.fromFile(file)
+      try {
+        Some(source.mkString)
+      } catch {
+        case _: Exception => None
+      } finally {
+        source.close()
+      }
+    } else {
+      None
     }
   }
 
