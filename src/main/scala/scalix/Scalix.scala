@@ -12,144 +12,199 @@ case class FullName(firstName: String, lastName: String)
 object Scalix extends App {
   implicit val formats: Formats = DefaultFormats
 
+  // Project constants
   private object Constants {
     val key: String = "33ffb9eb0bee38fe44db188c48c41728"
     val dataDir: String = "./data"
   }
 
-  // Création du répertoire pour stocker les fichiers JSON
+  // Create folder for cached data
   new File(Constants.dataDir).mkdirs()
 
-  // Cache primaire (en mémoire)
-  private val actorCache: collection.mutable.Map[(String, String), Option[Int]] = collection.mutable.Map()
-  private val movieCache: collection.mutable.Map[Int, Set[(Int, String)]] = collection.mutable.Map()
-  private val directorCache: collection.mutable.Map[Int, Option[(Int, String)]] = collection.mutable.Map()
+  // Primary cache
 
-  // Fonction générique pour lire ou écrire dans le cache secondaire
-  private def readFromFile(filename: String): Option[String] =
+  // Actor cache : associate an actor id option to a first name and last name
+  private var actorCache: Map[(String, String), Option[Int]] = Map()
+
+  // Movie cache : associate a set of movies (id and title) to an actor id
+  private var movieCache: Map[Int, Set[(Int, String)]] = Map()
+
+  // Director cache : associate a director (id and name) to a movie id
+  private var directorCache: Map[Int, Option[(Int, String)]] = Map()
+
+  // Function to read from file and return content
+  private def readFromFile(filename: String): Option[String] = {
+    val source = Source.fromFile(filename)
     try {
-      Some(Source.fromFile(filename).mkString)
+      Some(source.mkString)
     } catch {
       case _: Exception => None
+    } finally {
+      source.close()
     }
+  }
 
+  // Function to write to file
   private def writeToFile(filename: String, content: String): Unit = {
     val writer = new PrintWriter(filename)
     try writer.write(content)
     finally writer.close()
   }
 
-  // Fonction générique pour effectuer une requête avec gestion des deux caches
+  // Function to fetch and cache data
   private def fetchAndCache(url: String, cacheFile: String): JValue = {
     readFromFile(cacheFile)
-      .map(jsonParse(_)) // Lecture depuis le cache secondaire
+      .map(jsonParse(_)) // Read from secondary cache
       .getOrElse {
-        val contents = Source.fromURL(url).mkString
-        writeToFile(cacheFile, contents) // Mise à jour du cache secondaire
-        jsonParse(contents)
+        val source = Source.fromURL(url)
+        try {
+          val contents = source.mkString
+          writeToFile(cacheFile, contents) // Update secondary cache
+          jsonParse(contents)
+        } finally {
+          source.close()
+        }
       }
   }
 
-  // Requête TMDB générique avec gestion de la clé API
+  // Generic TMDB request with API key management
   private def makeRequest(endpoint: String, parameters: Map[String, String] = Map.empty, filename: Option[String] = None): JValue = {
+    // Generate string of parameters to include in the request URL. This enables to add the API key easily
     val queryParams = parameters.map { case (k, v) => s"$k=${v.replace(" ", "%20")}" }.mkString("&")
+    // Request URL
     val url = s"https://api.themoviedb.org/3/$endpoint?api_key=${Constants.key}&$queryParams"
+
+    // If filename is passed, we will cache the data in a file
     if (filename.isDefined) {
       val cacheFile = s"${Constants.dataDir}/${filename.get}.json"
-      fetchAndCache(url, cacheFile)
+      fetchAndCache(url, cacheFile) // We get data from cache file or create it
     } else {
-      jsonParse(Source.fromURL(url).mkString)
+      // Directly fetch data
+      val source = Source.fromURL(url)
+      try {
+        jsonParse(source.mkString)
+      } finally {
+        source.close()
+      }
     }
   }
 
-  // Trouver l'ID d'un acteur avec cache primaire
+  // Find actor ID with full name
   private def findActorId(fullName: FullName): Option[Int] = {
-    actorCache.getOrElseUpdate((fullName.firstName, fullName.lastName), {
+    actorCache.getOrElse((fullName.firstName, fullName.lastName), {
+      // If not in primary cache
+
+      // Request URL with parameter and result extract
       val results = (makeRequest("search/person", Map("query" -> s"${fullName.firstName} ${fullName.lastName}")) \ "results").extract[List[JValue]]
-      results.headOption.map(result => (result \ "id").extract[Int])
+      val actorIdOpt = results.headOption.map(result => (result \ "id").extract[Int]) // First found id
+
+      // Primary cache update
+      actorCache += (fullName.firstName -> fullName.lastName) -> actorIdOpt
+      actorIdOpt
     })
   }
 
-  // Trouver les films d'un acteur avec gestion de cache secondaire via makeRequest
+  // Find movies of actor with actor id
   private def findActorMovies(actorId: Int): Set[(Int, String)] = {
-    movieCache.getOrElseUpdate(actorId, {
+    movieCache.getOrElse(actorId, {
+      // If not in primary cache
+      // Get or fetch from file cache
       val results = (makeRequest(s"person/$actorId/movie_credits", filename = Some(s"actor$actorId")) \ "cast").extract[List[JValue]]
-      results.map(movie => ((movie \ "id").extract[Int], (movie \ "title").extract[String])).toSet
+      val movies = results.map(movie => ((movie \ "id").extract[Int], (movie \ "title").extract[String])).toSet
+
+      // Update primary cache
+      movieCache += actorId -> movies
+      movies
     })
   }
 
-  // Trouver le réalisateur d'un film avec gestion de cache secondaire via makeRequest
+  // Find movie director with movie id
   private def findMovieDirector(movieId: Int): Option[(Int, String)] = {
-    directorCache.getOrElseUpdate(movieId, {
+    directorCache.getOrElse(movieId, {
+      // If not in primary cache
+      // Get or fetch from file cache
       val results = (makeRequest(s"movie/$movieId/credits", filename = Some(s"movie$movieId")) \ "crew").extract[List[JValue]]
-      results.find(member => (member \ "job").extract[String] == "Director")
+      val directorOpt = results.find(member => (member \ "job").extract[String] == "Director")
         .map(d => ((d \ "id").extract[Int], (d \ "name").extract[String]))
+
+      // Update primary cache
+      directorCache += movieId -> directorOpt
+      directorOpt
     })
   }
 
-  // Trouver les collaborations entre deux acteurs avec cache primaire et secondaire
+  // Find collaboration between two actors given their full names
   private def collaboration(actor1: FullName, actor2: FullName): Set[(String, String)] = {
     for {
+      // Ids of actors
       id1 <- findActorId(actor1).toSet
       id2 <- findActorId(actor2).toSet
+      // Movies of actors
       movies1 = findActorMovies(id1)
       movies2 = findActorMovies(id2)
+
+      // Common movies of actors
       commonMovies = movies1.intersect(movies2)
+
+      // Get movieId by destructuration
       (movieId, movieTitle) <- commonMovies
+      // Get director
       director <- findMovieDirector(movieId)
-    } yield (director._2, movieTitle)
+    } yield (director._2, movieTitle) // Return director's name and movie title
   }
 
   private def findMostFrequentActorPairs(): List[((String, String), Int)] = {
-    // Étape 1 : Inverser le mapping pour associer chaque film à son ensemble d'acteurs
+    // Step 1 : Invert mapping of cache to associate actors to movies
     val movieToActors: Map[Int, Set[Int]] = movieCache.toSeq
       .flatMap { case (actorId, movies) => movies.map(movie => (movie._1, actorId)) } // (movieId, actorId)
-      .groupBy(_._1) // Grouper par ID de film
-      .view.mapValues(_.map(_._2).toSet) // Obtenir un Set d'acteurs par film
+      .groupBy(_._1) // Group by movie ID
+      .view.mapValues(_.map(_._2).toSet) // Obtain a set of actors for each movie
       .toMap
 
-    // Étape 2 : Trouver les paires d'acteurs pour chaque film
+    // Step 2 : Generate pairs of actors for each movie
     val actorPairsWithCount: Map[(Int, Int), Int] = movieToActors.values
       .flatMap { actors =>
         for {
           actor1 <- actors
-          actor2 <- actors if actor1 < actor2 // Générer des paires uniques
+          actor2 <- actors if actor1 < actor2 // Avoid duplicates by comparing ids
         } yield (actor1, actor2)
       }
-      .groupBy(identity) // Grouper les paires
-      .view.mapValues(_.size) // Compter les occurrences de chaque paire
+      .groupBy(identity) // Group pairs
+      .view.mapValues(_.size) // Count occurrences of each pairs
       .toMap
 
-    // Étape 3 : Associer les IDs d'acteurs à leurs noms et trier les résultats
+    // Step 3 : Convert actor IDs to names and sort by frequency
     actorPairsWithCount.toList
       .map { case ((actor1Id, actor2Id), count) =>
+        // Get names from cache or default to "Actor ID" if not available
         val actor1Name = actorCache.collectFirst { case ((firstName, lastName), Some(id)) if id == actor1Id => s"$firstName $lastName" }.getOrElse(s"Actor $actor1Id")
         val actor2Name = actorCache.collectFirst { case ((firstName, lastName), Some(id)) if id == actor2Id => s"$firstName $lastName" }.getOrElse(s"Actor $actor2Id")
-        ((actor1Name, actor2Name), count)
+        ((actor1Name, actor2Name), count) // Generate pairs with names and count
       }
-      .sortBy(-_._2) // Trier par fréquence décroissante
+      .sortBy(-_._2) // Sort by frequency in descending order
   }
 
-  // Exemple d'utilisation
-  println("Hello, Scalix!")
-  val result = collaboration(FullName("Tom", "Hanks"), FullName("Tom", "Cruise"))
-  println(result)
 
-  val result1 = collaboration(FullName("Leonardo", "DiCaprio"), FullName("Kate", "Winslet"))
-  println(result1)
+  // Tests and results
+  println("Hello from Scalix!")
 
-  val result2 = collaboration(FullName("Robert", "De Niro"), FullName("Al", "Pacino"))
-  println(result2)
+  println("Find actor by id. Id of Tom Hanks is : " + findActorId(FullName("Tom", "Hanks")).get)
 
-  val result3 = collaboration(FullName("Brad", "Pitt"), FullName("Angelina", "Jolie"))
-  println(result3)
+  println("Find movies of actor. Movies of Tom Hanks are : ")
+  findActorMovies(findActorId(FullName("Tom", "Hanks")).get).foreach(movie => println("Id: " + movie._1 + " Title: " + movie._2))
 
-  val result4 = collaboration(FullName("Johnny", "Depp"), FullName("Helena", "Bonham Carter"))
-  println(result4)
+  println("Find movie director. Director of movie with id 13 is : " + findMovieDirector(13).get._2)
 
-  val result5 = collaboration(FullName("Tom", "Hanks"), FullName("Meg", "Ryan"))
-  println(result5)
-  println(movieCache)
-  val mostFrequentPairs = findMostFrequentActorPairs()
-  println(mostFrequentPairs.take(10))
+  println("Collaboration between Tom Hanks and Tom Cruise : ")
+  collaboration(FullName("Tom", "Hanks"), FullName("Tom", "Cruise")).foreach(movie => println("Director: " + movie._1 + " Movie: " + movie._2))
+
+  // Load some cache data
+  collaboration(FullName("Leonardo", "DiCaprio"), FullName("Kate", "Winslet"))
+  collaboration(FullName("Robert", "De Niro"), FullName("Al", "Pacino"))
+  collaboration(FullName("Brad", "Pitt"), FullName("Angelina", "Jolie"))
+  collaboration(FullName("Johnny", "Depp"), FullName("Helena", "Bonham Carter"))
+  collaboration(FullName("Tom", "Hanks"), FullName("Meg", "Ryan"))
+
+  println("Most frequent actor pairs : ")
+  findMostFrequentActorPairs().foreach(pair => println("Actor " + pair._1._1 + " and actor " + pair._1._2 + " : " + pair._2 + " times"))
 }
