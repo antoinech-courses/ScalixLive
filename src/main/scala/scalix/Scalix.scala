@@ -33,7 +33,7 @@ object Scalix extends App {
   private var directorCache: Map[Int, Option[(Int, String)]] = Map()
 
   // Function to read from file and return content
-  private def readFromFile(filename: String): Option[String] = {
+  def readFromFile(filename: String): Option[String] = {
     val file = new File(filename)
     if (file.exists && file.isFile) {
       val source = Source.fromFile(file)
@@ -50,14 +50,14 @@ object Scalix extends App {
   }
 
   // Function to write to file
-  private def writeToFile(filename: String, content: String): Unit = {
+  def writeToFile(filename: String, content: String): Unit = {
     val writer = new PrintWriter(filename)
     try writer.write(content)
     finally writer.close()
   }
 
   // Function to fetch and cache data
-  private def fetchAndCache(url: String, cacheFile: String): JValue = {
+  def fetchAndCache(url: String, cacheFile: String): JValue = {
     readFromFile(cacheFile)
       .map(jsonParse(_)) // Read from secondary cache
       .getOrElse {
@@ -73,7 +73,7 @@ object Scalix extends App {
   }
 
   // Generic TMDB request with API key management
-  private def makeRequest(endpoint: String, parameters: Map[String, String] = Map.empty, filename: Option[String] = None): JValue = {
+  def makeRequest(endpoint: String, parameters: Map[String, String] = Map.empty, filename: Option[String] = None): JValue = {
     // Generate string of parameters to include in the request URL. This enables to add the API key easily
     val queryParams = parameters.map { case (k, v) => s"$k=${v.replace(" ", "%20")}" }.mkString("&")
     // Request URL
